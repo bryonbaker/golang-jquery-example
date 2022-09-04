@@ -31,20 +31,6 @@ const msg string = "{\"header\":{\"id\":\"e1f4f65c-27df-418a-accd-f3b62c71ef02\"
 // FX Rates: '.dataSets[0].series."0:0:0:0:0".observations'
 // FX Rates for first observation: '.dataSets[0].series."0:0:0:0:0".observations."0"[0]'
 
-var jsonObj = `
-{
-  "name": "sam",
-  "gender": "m",
-  "pet": null,
-  "skills": [
-    "Eating",
-    "Sleeping",
-    "Crawling"
-  ],
-  "hello.world":true
-}
-`
-
 func main() {
 	// Load the raw json message
 	var input map[string]interface{}
