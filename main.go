@@ -53,9 +53,6 @@ func runQuery(input *map[string]interface{}, queryString string) {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	if err != nil {
-		log.Fatalln(err)
-	}
 
 	iter := query.Run(*input) // or query.RunWithContext
 
