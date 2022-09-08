@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"strconv"
 
 	"github.com/itchyny/gojq"
 )
@@ -36,13 +37,61 @@ func main() {
 	var input map[string]interface{}
 	json.Unmarshal([]byte(msg), &input)
 
-	testQueries := []string{".header.sender.id",
-		".dataSets[0].series.\"0:0:0:0:0\".observations.\"0\"[0]",
-		".dataSets[0].series.\"0:0:0:0:0\".observations"}
+	testQueries := []string{
+		//		".header.sender.id",
+		//		".header.sengder.id",
+		//		".dataSets[0].series.\"0:0:0:0:0\".observations.\"0\"[0]",
+		//		".dataSets[0].series.\"0:0:0:0:0\".observations",
+		".structure.dimensions.series"}
 
 	for _, v := range testQueries {
+
+		json.Unmarshal([]byte(msg), &input)
 		runQuery(&input, v)
 	}
+
+	parseResponse(msg)
+}
+
+// parseResponse extracts the FX details from the repsonse and stores it in a usable format
+// that is base don the CSV formst you can download form ECB.
+func parseResponse(ecbJsonResp string) {
+	// A list of all the JQueries that are used.
+	queries := map[string]string{
+		"sender":                     ".header.sender.id",
+		"time-period":                ".dataSets[0].validFrom",
+		"count-observations":         ".dataSets[].series.\"0:0:0:0:0\".observations | length",
+		"firstObservation":           ".dataSets[0].series.\"0:0:0:0:0\".observations.\"0\"[0]",
+		"allObservations":            ".dataSets[0].series.\"0:0:0:0:0\".observations",
+		"structure-observations-len": ".structure.dimensions.series | length,",
+		"structure-observations":     ".structure.dimensions.series[0].",
+		"dimension-frequency":        ".structure.dimensions.series[] | select(.id==\"FREQ\")",
+		"frequency":                  ".structure.dimensions.series[] | select(.id==\"FREQ\") | .values[0].id"}
+
+	// Run all thew JQueries to extract the data
+	var input map[string]interface{}
+	json.Unmarshal([]byte(ecbJsonResp), &input)
+
+	var jsonVal interface{}
+
+	jsonVal = queryPath(&input, queries["sender"])
+	fmt.Println(jsonVal.(string))
+
+	// Get the time of the value
+	jsonVal = queryPath(&input, queries["time-period"])
+	fmt.Println(jsonVal.(string))
+
+	// Get the time of the value
+	jsonVal = queryPath(&input, queries["frequency"])
+	fmt.Println(jsonVal.(string))
+
+	// Extract CURRENCY_DENOM
+	queryDimensions(&input, "CURRENCY_DENOM")
+
+	jsonVal = queryPath(&input, queries["count-observations"])
+	fmt.Printf("Number of observations: %d\n", jsonVal.(int))
+
+	return
 }
 
 func runQuery(input *map[string]interface{}, queryString string) {
@@ -55,34 +104,128 @@ func runQuery(input *map[string]interface{}, queryString string) {
 	}
 
 	iter := query.Run(*input) // or query.RunWithContext
+	fmt.Printf("Iter type: %v\n", reflect.TypeOf(iter))
 
-	for {
-		v, ok := iter.Next()
-		if !ok {
-			break
-		}
-		if err, ok := v.(error); ok {
+	for v, more := iter.Next(); more; v, more = iter.Next() {
+		if err, more := v.(error); more {
 			log.Fatalln(err)
-		}
-		fmt.Printf("%#v\n", v)
-		fmt.Printf("Type: %s\n", reflect.TypeOf(v))
+		} else if v == nil {
+			log.Printf("query returns no result: <%s>", queryString)
+		} else {
+			fmt.Printf("%#v\n", v)
+			fmt.Printf("Type: %s\n", reflect.TypeOf(v))
 
-		if reflect.TypeOf(v).Kind() == reflect.Map {
-			// Cast the object
-			m := v.(map[string]interface{})
-			fmt.Println("Number of observations: ", len(m))
-			fmt.Printf("Preview of the observations: %s\n", gojq.Preview(m))
+			if reflect.TypeOf(v).Kind() == reflect.Map {
+				// Cast the object
+				m := v.(map[string]interface{})
+				fmt.Println("Number of observations: ", len(m))
+				fmt.Printf("Preview of the observations: %s\n", gojq.Preview(m))
 
-			// PLay with getting an observation
-			o := "0"
-			fmt.Printf("Observation %s: %v\n", o, m[o])
-			fmt.Printf("Observation type: %v\n", reflect.TypeOf(m[o]))
+				// PLay with getting an observation
+				o := "0"
+				fmt.Printf("Observation %s: %v\n", o, m[o])
+				fmt.Printf("Observation type: %v\n", reflect.TypeOf(m[o]))
 
-			// Play with extracting values from the observations
-			a := m[o].([]interface{})
-			fmt.Println((a[0]).(float64))
-			val := (a[0]).(float64)
-			fmt.Println(reflect.TypeOf(val))
+				// Play with extracting values from the observations
+				a := m[o].([]interface{})
+				fmt.Println((a[0]).(float64))
+				val := (a[0]).(float64)
+				s := strconv.FormatFloat(a[0].(float64), 'f', -1, 64)
+				fmt.Println(s)
+				fmt.Println(reflect.TypeOf(val))
+			} else if reflect.TypeOf(v).Kind() == reflect.Slice {
+				fmt.Println("Type is a Slice")
+				fmt.Println("Length is: ", len(v.([]interface{})))
+
+				for idx, value := range v.([]interface{}) {
+					fmt.Println(idx, value)
+					innerValue := value.(map[string]interface{})
+					fmt.Println(innerValue["id"])
+				}
+			}
 		}
 	}
+}
+
+// Queries a single path in a json message. It returns an interface because the caller
+// understands the context and will need to cast it to the appropriate type.
+// This can be used to search for a specific value at a path, or to return a subtree that
+// can be parsed further. E.g. Return a float of an array.
+func queryPath(input *map[string]interface{}, queryString string) interface{} {
+	var resp interface{}
+
+	query, err := gojq.Parse(queryString)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	iter := query.Run(*input) // or query.RunWithContext
+
+	// While there are more items to fetch - fetch them.
+	for value, more := iter.Next(); more; value, more = iter.Next() {
+		// "more" and "value" are dual-purpose result codes. In the gojq code the bool result is the
+		// inverse of "done". So result is false when done and true when not done. If true, the
+		// Interface{} result can be cast to a value or an Error type. So if true you should check
+		// if it was an error before checking for the result.
+		if err, more := value.(error); more {
+			log.Fatalln(err)
+		} else if value == nil {
+			var e error = fmt.Errorf("query returns no result: <%s>", queryString)
+			log.Fatal(e)
+		} else {
+			resp = value
+			fmt.Println(reflect.TypeOf(resp))
+		}
+	}
+
+	return resp
+}
+
+// queryDimensions searches within the dimensions hierachy for specified key/values.
+// It returns an interface because the result can be more than one type. The caller
+// is responsible for knowing how to convert the type.
+func queryDimensions(input *map[string]interface{}, key string) interface{} {
+	var resp interface{}
+
+	var v interface{}
+	v = queryPath(input, ".structure.dimensions.series")
+	fmt.Println(reflect.TypeOf(v))
+
+	// This path should return an array of dimensions. After retrieving the array
+	// we need to extract the nominated value.
+	if reflect.TypeOf(v).Kind() == reflect.Slice {
+		// Cast the object
+		m := v.([]interface{})
+		log.Println("number of observations: ", len(m))
+		log.Println("preview of the observations: ", gojq.Preview(m))
+
+		extractDimensionData(m, key)
+	}
+
+	resp = v
+
+	return resp
+}
+
+// Scan the array of dimensions for the nominated key and return the value
+// Returns nil if the key could not be found.
+// TODO: Add error handling
+func extractDimensionData(input []interface{}, key string) interface{} {
+	var resp interface{} = nil
+
+	for _, value := range input {
+		innerValue := value.(map[string]interface{})
+		if key == innerValue["id"] {
+			// Cast the "values" object and extract the value
+			// values is a single-element array. So need to cast twice to an array of interfaces
+			// index the array and cast the result to a map[string]interface{}. Argh!
+			values := innerValue["values"].([]interface{})[0].(map[string]interface{})
+			resp = values["id"]
+			log.Println(innerValue["id"], ": ", resp)
+
+			break
+		}
+	}
+
+	return resp
 }
